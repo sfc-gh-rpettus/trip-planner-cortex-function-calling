@@ -103,51 +103,48 @@ def get_dining(location: str) -> list[str]:
 # -- Cortex calls and event processing --
 
 def call_cortex_api(messages: list[dict], event_callback=None) -> list[dict]:
-    payload = {
-        "model":      LLM_MODEL,
-        "messages":   messages,
-        "tools":      TOOLS,
-        "max_tokens": 4096,
-        "top_p":      1,
-        "stream":     True,
-    }
     resp = _snowflake.send_snow_api_request(
-        "POST", CORTEX_API_EP, REQUEST_HEADERS, {}, payload, None, 60_000
+        "POST", CORTEX_API_EP, REQUEST_HEADERS,
+        {}, 
+        {
+            "model":      LLM_MODEL,
+            "messages":   messages,
+            "tools":      TOOLS,
+            "max_tokens": 4096,
+            "top_p":      1,
+            "stream":     True,
+        },
+        None, 60_000
     )
     if resp["status"] != 200:
-        raise RuntimeError(
-            f"Cortex HTTP {resp['status']} – {resp.get('reason')}\n"
-            f"{resp.get('content','')[:300]}"
-        )
+        raise RuntimeError(f"Cortex HTTP {resp['status']} – {resp.get('reason')}\n"
+                           f"{resp.get('content','')[:300]}")
 
-    raw = resp["content"].lstrip()
+    raw = resp["content"]
     events = []
 
-    # Direct JSON array?
-    if raw.startswith("["):
-        try:
-            arr = json.loads(raw)
-            for ev in arr:
-                if event_callback:
-                    event_callback(ev)
-            return arr
-        except json.JSONDecodeError:
-            pass
-
-    # Otherwise, SSE parsing
+    # 1) First pass: parse SSE frames
     for chunk in raw.split("\n\n"):
         chunk = chunk.strip()
         if not chunk.startswith("data:"):
             continue
         payload = chunk[len("data:"):].strip()
-        if payload == "[DONE]":
-            continue
-        ev = json.loads(payload)
-        events.append(ev)
-        if event_callback:
-            event_callback(ev)
+        if payload and payload != "[DONE]":
+            ev = json.loads(payload)
+            events.append(ev)
+            if event_callback:
+                event_callback(ev)
+
+    # 2) If we found no SSE frames, treat the entire body as JSON array
+    if not events:
+        arr = json.loads(raw)
+        for ev in arr:
+            if event_callback:
+                event_callback(ev)
+        return arr
 
     return events
+
 
 
 # -- Helper functions to extract tool_use & assistant text --
